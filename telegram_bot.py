@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-MVP Step 2 — Telegram Bot + Social Extractor
-Kirim CA → ambil data DexScreener + teks website + info Twitter
+MVP Step 2 (Improved) — Telegram Bot + Cleaner Social Extractor
 """
 
 import os
+import re
 import requests
 import logging
 from datetime import datetime
@@ -12,9 +12,7 @@ from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ================== KONFIGURASI ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "MASUKKAN_TOKEN_BOT_KAMU_DISINI")
-# =================================================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -36,8 +34,19 @@ def get_token_data(ca: str):
         logger.error(f"Error fetching DexScreener: {e}")
         return None
 
-def scrape_website(url: str, max_chars: int = 1500) -> str:
-    """Ambil teks utama dari website"""
+def is_noise(text: str) -> bool:
+    """Filter teks yang kemungkinan noise / ciphertext / terlalu acak"""
+    if len(text) < 40:
+        return True
+    alpha_ratio = len(re.findall(r"[a-zA-Z]", text)) / max(len(text), 1)
+    if alpha_ratio < 0.55:
+        return True
+    # Deteksi pola base64-like yang panjang
+    if re.search(r"[A-Za-z0-9+/]{25,}={0,2}", text) and alpha_ratio < 0.75:
+        return True
+    return False
+
+def scrape_website(url: str, max_chars: int = 1200) -> str:
     if not url:
         return "Tidak ada website"
     try:
@@ -45,35 +54,36 @@ def scrape_website(url: str, max_chars: int = 1500) -> str:
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
 
-        # Hapus script, style, nav, footer
-        for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]):
+        for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "svg", "canvas"]):
             tag.decompose()
 
-        # Ambil teks dari paragraf dan heading
         texts = []
-        for elem in soup.find_all(["h1", "h2", "h3", "p", "li"]):
+        for elem in soup.find_all(["h1", "h2", "h3", "p"]):
             text = elem.get_text(separator=" ", strip=True)
-            if len(text) > 30:
+            if not is_noise(text):
                 texts.append(text)
 
-        content = "\n".join(texts)
-        if not content:
-            content = soup.get_text(separator=" ", strip=True)
+        if len(" ".join(texts)) < 250:
+            for elem in soup.find_all("li"):
+                text = elem.get_text(separator=" ", strip=True)
+                if not is_noise(text) and len(text) > 50:
+                    texts.append(text)
 
-        content = " ".join(content.split())  # bersihkan spasi berlebih
+        content = " ".join(texts)
+        content = re.sub(r"\s+", " ", content).strip()
+
+        if not content:
+            return "Tidak berhasil mengambil teks yang bersih dari website"
+
         if len(content) > max_chars:
-            content = content[:max_chars] + "..."
-        return content if content else "Tidak berhasil mengambil teks website"
+            content = content[:max_chars].rsplit(" ", 1)[0] + "..."
+
+        return content
     except Exception as e:
         logger.warning(f"Gagal scrape website {url}: {e}")
-        return f"Gagal mengambil website ({str(e)[:80]})"
+        return f"Gagal mengambil website ({str(e)[:100]})"
 
 def get_twitter_info(twitter_url: str) -> str:
-    """
-    Catatan: Twitter/X sangat ketat terhadap scraping.
-    Di versi ini kita hanya kembalikan link + catatan.
-    Nanti bisa ditingkatkan dengan API resmi atau layanan pihak ketiga.
-    """
     if not twitter_url:
         return "Tidak ada Twitter"
     return f"{twitter_url}\n(Info bio/tweet belum diambil otomatis di versi ini)"
@@ -106,10 +116,7 @@ def build_reply(data, ca):
     twitter_url = next((s["url"] for s in socials if s.get("type") == "twitter"), None)
     telegram_url = next((s["url"] for s in socials if s.get("type") == "telegram"), None)
 
-    # Scrape website
     website_text = scrape_website(website_url)
-
-    # Twitter info
     twitter_info = get_twitter_info(twitter_url)
 
     created = "N/A"
@@ -143,14 +150,14 @@ def build_reply(data, ca):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Kirim CA token untuk melihat data + ringkasan website.\n\n"
-        "Contoh:\n`0xc256e0fb1f93164b8e499746bba593a8e40a7eef`",
+        "Contoh:\n`0x1e786d31934fc64f450ee47e3f61b41516312f4e`",
         parse_mode="Markdown"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ca = update.message.text.strip()
 
-    if not (ca.startswith("0x") and len(ca) >= 40) and len(ca) < 32:
+    if not ((ca.startswith("0x") and len(ca) >= 40) or len(ca) >= 32):
         await update.message.reply_text("Format CA tidak valid.")
         return
 
@@ -159,7 +166,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = get_token_data(ca)
     reply = build_reply(data, ca)
 
-    # Telegram punya batas panjang pesan
     if len(reply) > 4000:
         reply = reply[:4000] + "\n\n...(dipotong)"
 
@@ -174,7 +180,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("Bot Step 2 sedang berjalan...")
+    print("Bot Step 2 (Improved) sedang berjalan...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
