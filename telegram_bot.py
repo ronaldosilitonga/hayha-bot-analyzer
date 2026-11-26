@@ -78,7 +78,7 @@ def is_noise(text: str) -> bool:
         return True
     return len(re.findall(r"[a-zA-Z]", text)) / max(len(text), 1) < 0.55
 
-def scrape_website(url: str, max_chars: int = 700) -> str:
+def scrape_website(url: str, max_chars: int = 800) -> str:
     if not url:
         return "Tidak ada website"
     try:
@@ -196,44 +196,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         website_url = (info.get("websites") or [{}])[0].get("url")
         twitter_url = next((s["url"] for s in info.get("socials", []) if s.get("type") == "twitter"), None)
-        website_text = scrape_website(website_url)
+        website_text = scrape_website(website_url) or ""
 
         fdv = format_number(pair.get("fdv"))
         mcap = format_number(pair.get("marketCap"))
         liq = format_number(pair.get("liquidity", {}).get("usd"))
         vol = format_number(pair.get("volume", {}).get("h24"))
 
-        # Pesan 1: Data dasar
-        msg1 = f"""{base.get('symbol', 'N/A')} — {base.get('name', 'N/A')}
+        # Pesan 1 — data dasar (pendek)
+        short_web = (website_text[:350] + "...") if len(website_text) > 350 else website_text
+        msg1 = (
+            f"{base.get('symbol', 'N/A')} — {base.get('name', 'N/A')}\n\n"
+            f"CA: {ca}\n"
+            f"Chain: {pair.get('chainId', 'N/A')}\n\n"
+            f"FDV: {fdv}\n"
+            f"Market Cap: {mcap}\n"
+            f"Liquidity: {liq}\n"
+            f"Volume 24h: {vol}\n\n"
+            f"Website: {website_url or 'Tidak ada'}\n"
+            f"Twitter: {twitter_url or 'Tidak ada'}\n\n"
+            f"Ringkasan Website:\n{short_web}"
+        )
+        await status.edit_text(msg1[:4000])
 
-CA: {ca}
-Chain: {pair.get('chainId', 'N/A')}
-
-FDV: {fdv}
-Market Cap: {mcap}
-Liquidity: {liq}
-Volume 24h: {vol}
-
-Website: {website_url or 'Tidak ada'}
-Twitter: {twitter_url or 'Tidak ada'}
-
-Ringkasan Website:
-{website_text[:600]}"""
-
-        await status.edit_text(msg1)
-
-        # Pesan 2: Scoring
-        llm_input = f"""Token: {base.get('symbol')} ({base.get('name')})
-Website: {website_url or 'Tidak ada'}
-Twitter: {twitter_url or 'Tidak ada'}
-Ringkasan: {website_text[:800]}"""
-
-        score = score_narrative(llm_input)
-        await update.message.reply_text(f"Narrative Score:\n\n{score}")
+        # Pesan 2 — score
+        llm_input = (
+            f"Token: {base.get('symbol')}\n"
+            f"Website: {website_url or 'Tidak ada'}\n"
+            f"Twitter: {twitter_url or 'Tidak ada'}\n"
+            f"Ringkasan: {website_text[:700]}"
+        )
+        score = score_narrative(llm_input) or "Tidak ada hasil scoring."
+        await update.message.reply_text(("Narrative Score:\n\n" + score)[:4000])
 
     except Exception as e:
         logger.exception("Error")
-        await status.edit_text(f"Error memproses CA {ca}:\n{str(e)[:300]}")
+        await status.edit_text(f"Error: {str(e)[:250]}")
 
 def main():
     if not BOT_TOKEN or "MASUKKAN" in BOT_TOKEN:
