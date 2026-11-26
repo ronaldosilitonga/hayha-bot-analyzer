@@ -78,7 +78,7 @@ def is_noise(text: str) -> bool:
         return True
     return len(re.findall(r"[a-zA-Z]", text)) / max(len(text), 1) < 0.55
 
-def scrape_website(url: str, max_chars: int = 900) -> str:
+def scrape_website(url: str, max_chars: int = 600) -> str:
     if not url:
         return "Tidak ada website"
     try:
@@ -147,7 +147,7 @@ FDV: {fdv}
 Website: {website_url or 'Tidak ada'}
 Twitter: {twitter_url or 'Tidak ada'}
 Ringkasan Website:
-{website_text}
+{website_text[:500]}
 """
     score = score_narrative(llm_input)
 
@@ -166,7 +166,7 @@ Website: {website_url or 'Tidak ada'}
 Twitter: {twitter_url or 'Tidak ada'}
 
 Ringkasan Website:
-{website_text}
+{website_text[:500]}
 
 ---
 Narrative Score:
@@ -187,8 +187,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         data = get_token_data(ca)
         reply = build_reply(data, ca)
-        if len(reply) > 4000:
-            reply = reply[:4000] + "\n...(dipotong)"
+        if len(reply) > 3900:
+            reply = reply[:3900] + "\n\n...(pesan dipotong)"
         await msg.edit_text(reply)  # Tanpa parse_mode
     except Exception as e:
         logger.exception("Error")
