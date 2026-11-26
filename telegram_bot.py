@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-MVP Step 3 (Updated) — Telegram Bot + Social Extractor + LLM Narrative Scoring
-Fokus: FDV/Market Cap + Hook & Sellability
+MVP Step 3 (Robust) — Telegram Bot with timeouts & better error handling
 """
 
 import os
@@ -13,6 +12,7 @@ from bs4 import BeautifulSoup
 from openai import OpenAI
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 # ================== KONFIGURASI ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "MASUKKAN_TOKEN_BOT_KAMU_DISINI")
@@ -33,42 +33,23 @@ HEADERS = {
 
 client = None
 if OPENAI_API_KEY:
-    client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+    client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL, timeout=25.0)
 
 SCORING_PROMPT = """Kamu adalah degen berpengalaman yang menilai token memecoin dengan narasi tech.
-Tugasmu menilai seberapa bagus narasi tech-nya untuk potensi short-term (bukan long-term fundamental).
+Tugasmu menilai seberapa bagus narasi tech-nya untuk potensi short-term.
 
-Konteks penting:
-- Token degen mostly short-term. Banyak AI slop yang tetap bisa digoreng tinggi.
-- Nilai apakah narasinya “cukup bagus untuk dijual ke degen lain”.
-- Fokus utama: Hook & Clarity + Sellability.
-- Jangan buru-buru men-penalty chain tertentu (misalnya Robinhood Chain). Chain hanya jadi catatan kecil, bukan alasan utama menurunkan skor.
-- Data sosial sering tidak lengkap. Jangan langsung skor rendah hanya karena GitHub atau Twitter belum ada.
-- Website biasanya ada. Jika website tidak ketemu sama sekali, itu red flag yang cukup besar.
-- GitHub tidak ada = hampir tidak mempengaruhi skor.
-- Kondisi market (liquidity, FDV rendah) boleh disebut sebagai catatan, tapi jangan jadi alasan utama skor narasi rendah.
+Fokus utama: Hook & Clarity + Sellability.
+Jangan buru-buru men-penalty chain.
+GitHub tidak ada hampir tidak mempengaruhi skor.
+Jika website tidak ada sama sekali = red flag.
 
-Data yang kamu terima:
+Data:
 {data}
 
-Kriteria penilaian (urut prioritas):
-1. Hook & Clarity — mudah dipahami cepat dan menarik?
-2. Sellability — orang lain mudah “run” / shill narasinya?
-3. Tech Plausibility — klaimnya setidaknya masuk akal untuk degen?
-4. Kelengkapan data
-5. Red Flags (narasi, bukan market)
-
-Skor panduan (0.00 – 1.00):
-- 0.00–0.30: Lemah / kosong / terlalu generic
-- 0.31–0.55: Ada hook tapi biasa
-- 0.56–0.75: Cukup bagus, mudah dijual
-- 0.76–0.90: Kuat dan sticky
-- 0.91–1.00: Sangat jarang
-
-Output format (wajib ikuti persis):
+Output format:
 **Score:** 0.XX
 **Status Data:** Website [ada/tidak] | Twitter [ada/tidak] | GitHub [ada/tidak]
-**Alasan singkat:** (2–4 kalimat, fokus hook & sellability)
+**Alasan singkat:** (2-3 kalimat)
 **Kekuatan:**
 - ...
 **Red flags / kelemahan:**
@@ -79,32 +60,28 @@ Output format (wajib ikuti persis):
 def get_token_data(ca: str):
     url = f"https://api.dexscreener.com/latest/dex/tokens/{ca}"
     try:
-        response = requests.get(url, timeout=15)
+        response = requests.get(url, timeout=12)
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        logger.error(f"Error fetching DexScreener: {e}")
+        logger.error(f"DexScreener error: {e}")
         return None
 
 def is_noise(text: str) -> bool:
     if len(text) < 40:
         return True
     alpha_ratio = len(re.findall(r"[a-zA-Z]", text)) / max(len(text), 1)
-    if alpha_ratio < 0.55:
-        return True
-    if re.search(r"[A-Za-z0-9+/]{25,}={0,2}", text) and alpha_ratio < 0.75:
-        return True
-    return False
+    return alpha_ratio < 0.55
 
-def scrape_website(url: str, max_chars: int = 1200) -> str:
+def scrape_website(url: str, max_chars: int = 1000) -> str:
     if not url:
         return "Tidak ada website"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=12)
+        resp = requests.get(url, headers=HEADERS, timeout=10)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
 
-        for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "svg", "canvas"]):
+        for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]):
             tag.decompose()
 
         texts = []
@@ -113,28 +90,16 @@ def scrape_website(url: str, max_chars: int = 1200) -> str:
             if not is_noise(text):
                 texts.append(text)
 
-        if len(" ".join(texts)) < 250:
-            for elem in soup.find_all("li"):
-                text = elem.get_text(separator=" ", strip=True)
-                if not is_noise(text) and len(text) > 50:
-                    texts.append(text)
-
-        content = " ".join(texts)
-        content = re.sub(r"\s+", " ", content).strip()
-
+        content = re.sub(r"\s+", " ", " ".join(texts)).strip()
         if not content:
-            return "Tidak berhasil mengambil teks yang bersih dari website"
-
-        if len(content) > max_chars:
-            content = content[:max_chars].rsplit(" ", 1)[0] + "..."
-
-        return content
+            return "Tidak berhasil mengambil teks bersih"
+        return content[:max_chars] + ("..." if len(content) > max_chars else "")
     except Exception as e:
-        logger.warning(f"Gagal scrape website {url}: {e}")
-        return f"Gagal mengambil website ({str(e)[:100]})"
+        logger.warning(f"Scrape failed {url}: {e}")
+        return f"Gagal scrape website"
 
 def format_number(num):
-    if num is None:
+    if not num:
         return "N/A"
     try:
         num = float(num)
@@ -142,64 +107,51 @@ def format_number(num):
             return f"${num/1_000_000:.2f}M"
         elif num >= 1_000:
             return f"${num/1_000:.1f}K"
-        else:
-            return f"${num:.0f}"
+        return f"${num:.0f}"
     except:
-        return str(num)
+        return "N/A"
 
 def score_narrative(token_info: str) -> str:
     if not client:
-        return "LLM scoring tidak aktif (API key belum diisi)."
-
+        return "LLM tidak aktif (API key kosong)."
     try:
         prompt = SCORING_PROMPT.format(data=token_info)
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=700
+            max_tokens=500,
+            timeout=20
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"LLM error: {e}")
-        return f"Gagal melakukan scoring LLM: {str(e)[:150]}"
+        return f"Scoring gagal / timeout: {str(e)[:120]}"
 
 def build_reply(data, ca):
-    if not data or "pairs" not in data or not data["pairs"]:
+    if not data or not data.get("pairs"):
         return f"❌ Tidak ada data untuk CA:\n`{ca}`"
 
     pair = data["pairs"][0]
     base = pair.get("baseToken", {})
     info = pair.get("info", {})
 
-    websites = info.get("websites", [])
-    website_url = websites[0]["url"] if websites else None
-    socials = info.get("socials", [])
-    twitter_url = next((s["url"] for s in socials if s.get("type") == "twitter"), None)
+    website_url = info.get("websites", [{}])[0].get("url") if info.get("websites") else None
+    twitter_url = next((s["url"] for s in info.get("socials", []) if s.get("type") == "twitter"), None)
 
     website_text = scrape_website(website_url)
-
-    created = "N/A"
-    if pair.get("pairCreatedAt"):
-        created = datetime.fromtimestamp(pair["pairCreatedAt"] / 1000).strftime("%Y-%m-%d %H:%M")
 
     fdv = format_number(pair.get("fdv"))
     mcap = format_number(pair.get("marketCap"))
     liq = format_number(pair.get("liquidity", {}).get("usd"))
     vol = format_number(pair.get("volume", {}).get("h24"))
 
-    llm_input = f"""
-Token: {base.get('symbol', 'N/A')} ({base.get('name', 'N/A')})
+    llm_input = f"""Token: {base.get('symbol')} ({base.get('name')})
 CA: {ca}
-Chain: {pair.get('chainId', 'N/A')}
-FDV: {fdv}
-Market Cap: {mcap}
-Liquidity: {liq}
-Volume 24h: {vol}
+FDV: {fdv} | MCap: {mcap} | Liq: {liq}
 Website: {website_url or 'Tidak ada'}
 Twitter: {twitter_url or 'Tidak ada'}
-Ringkasan Website:
-{website_text}
+Ringkasan: {website_text}
 """
 
     score_result = score_narrative(llm_input)
@@ -218,7 +170,7 @@ Ringkasan Website:
 *Twitter:* {twitter_url or 'Tidak ada'}
 
 *Ringkasan Website:*
-{website_text[:700]}{"..." if len(website_text) > 700 else ""}
+{website_text[:600]}
 
 ---
 *Narrative Score:*
@@ -227,42 +179,36 @@ Ringkasan Website:
     return text
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Kirim CA token untuk analisis + scoring narasi tech.\n\n"
-        "Fokus: Hook, Sellability, dan FDV/Market Cap.",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text("Kirim CA untuk analisis + scoring narasi.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ca = update.message.text.strip()
-
     if not ((ca.startswith("0x") and len(ca) >= 40) or len(ca) >= 32):
         await update.message.reply_text("Format CA tidak valid.")
         return
 
-    msg = await update.message.reply_text("Mengambil data, menganalisis website, dan melakukan scoring...")
+    msg = await update.message.reply_text("Mengambil data...")
 
-    data = get_token_data(ca)
-    reply = build_reply(data, ca)
-
-    if len(reply) > 4000:
-        reply = reply[:4000] + "\n\n...(dipotong)"
-
-    await msg.edit_text(reply, parse_mode="Markdown", disable_web_page_preview=True)
+    try:
+        data = get_token_data(ca)
+        reply = build_reply(data, ca)
+        if len(reply) > 4000:
+            reply = reply[:4000] + "\n...(dipotong)"
+        await msg.edit_text(reply, parse_mode="Markdown", disable_web_page_preview=True)
+    except Exception as e:
+        logger.exception("Handle message error")
+        await msg.edit_text(f"Terjadi error saat memproses CA:\n`{ca}`\n\n{str(e)[:200]}")
 
 def main():
-    if not BOT_TOKEN or BOT_TOKEN == "MASUKKAN_TOKEN_BOT_KAMU_DISINI":
-        print("ERROR: BOT_TOKEN belum diisi!")
+    if not BOT_TOKEN or "MASUKKAN" in BOT_TOKEN:
+        print("ERROR: BOT_TOKEN belum diisi")
         return
-
-    if not OPENAI_API_KEY:
-        print("WARNING: OPENAI_API_KEY belum diisi. Scoring LLM akan dinonaktifkan.")
 
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("Bot Step 3 (Updated) sedang berjalan...")
+    print("Bot Robust version running...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
