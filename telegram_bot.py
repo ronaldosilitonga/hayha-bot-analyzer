@@ -107,18 +107,22 @@ def format_number(num):
 
 def score_narrative(info: str) -> str:
     if not client:
-        return "LLM tidak aktif."
+        return "LLM tidak aktif (API key kosong)."
     try:
         resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": SCORING_PROMPT.format(data=info)}],
-            temperature=0.3,
-            max_tokens=500,
-            timeout=20
+            temperature=0.4,
+            max_tokens=600,
+            timeout=25
         )
-        return resp.choices[0].message.content.strip()
+        result = resp.choices[0].message.content
+        if not result or not result.strip():
+            return "LLM mengembalikan respons kosong. Coba lagi atau ganti model."
+        return result.strip()
     except Exception as e:
-        return f"Scoring gagal: {str(e)[:100]}"
+        logger.error(f"LLM scoring error: {e}")
+        return f"Scoring gagal: {str(e)[:150]}"
 
 def build_reply(data, ca):
     if not data or not data.get("pairs"):
