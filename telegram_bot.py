@@ -183,7 +183,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Format CA tidak valid.")
         return
 
-    status = await update.message.reply_text("Mengambil data...")
+    status = await update.message.reply_text("Mengambil data... [v3]")
     try:
         data = get_token_data(ca)
         if not data or not data.get("pairs"):
