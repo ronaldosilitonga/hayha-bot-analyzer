@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-MVP Step 3 — Telegram Bot + Social Extractor + LLM Narrative Scoring
+MVP Step 3 (Updated) — Telegram Bot + Social Extractor + LLM Narrative Scoring
+Fokus: FDV/Market Cap + Hook & Sellability
 """
 
 import os
@@ -15,8 +16,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 # ================== KONFIGURASI ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "MASUKKAN_TOKEN_BOT_KAMU_DISINI")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")  # atau xAI API key
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")  # ganti jika pakai Grok/xAI
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 # =================================================
 
@@ -39,20 +40,23 @@ Tugasmu menilai seberapa bagus narasi tech-nya untuk potensi short-term (bukan l
 
 Konteks penting:
 - Token degen mostly short-term. Banyak AI slop yang tetap bisa digoreng tinggi.
-- Jangan terlalu idealis. Nilai apakah narasinya “cukup bagus untuk dijual ke degen lain”.
+- Nilai apakah narasinya “cukup bagus untuk dijual ke degen lain”.
+- Fokus utama: Hook & Clarity + Sellability.
+- Jangan buru-buru men-penalty chain tertentu (misalnya Robinhood Chain). Chain hanya jadi catatan kecil, bukan alasan utama menurunkan skor.
 - Data sosial sering tidak lengkap. Jangan langsung skor rendah hanya karena GitHub atau Twitter belum ada.
 - Website biasanya ada. Jika website tidak ketemu sama sekali, itu red flag yang cukup besar.
 - GitHub tidak ada = hampir tidak mempengaruhi skor.
+- Kondisi market (liquidity, FDV rendah) boleh disebut sebagai catatan, tapi jangan jadi alasan utama skor narasi rendah.
 
 Data yang kamu terima:
 {data}
 
-Kriteria penilaian:
-1. Hook & Clarity — mudah dipahami cepat?
-2. Tech Plausibility — klaimnya setidaknya masuk akal untuk degen?
-3. Sellability — orang lain mudah “run” narasinya?
+Kriteria penilaian (urut prioritas):
+1. Hook & Clarity — mudah dipahami cepat dan menarik?
+2. Sellability — orang lain mudah “run” / shill narasinya?
+3. Tech Plausibility — klaimnya setidaknya masuk akal untuk degen?
 4. Kelengkapan data
-5. Red Flags
+5. Red Flags (narasi, bukan market)
 
 Skor panduan (0.00 – 1.00):
 - 0.00–0.30: Lemah / kosong / terlalu generic
@@ -64,7 +68,7 @@ Skor panduan (0.00 – 1.00):
 Output format (wajib ikuti persis):
 **Score:** 0.XX
 **Status Data:** Website [ada/tidak] | Twitter [ada/tidak] | GitHub [ada/tidak]
-**Alasan singkat:** (2–4 kalimat)
+**Alasan singkat:** (2–4 kalimat, fokus hook & sellability)
 **Kekuatan:**
 - ...
 **Red flags / kelemahan:**
@@ -139,7 +143,7 @@ def format_number(num):
         elif num >= 1_000:
             return f"${num/1_000:.1f}K"
         else:
-            return f"${num:.2f}"
+            return f"${num:.0f}"
     except:
         return str(num)
 
@@ -153,7 +157,7 @@ def score_narrative(token_info: str) -> str:
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=600
+            max_tokens=700
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -172,7 +176,6 @@ def build_reply(data, ca):
     website_url = websites[0]["url"] if websites else None
     socials = info.get("socials", [])
     twitter_url = next((s["url"] for s in socials if s.get("type") == "twitter"), None)
-    telegram_url = next((s["url"] for s in socials if s.get("type") == "telegram"), None)
 
     website_text = scrape_website(website_url)
 
@@ -180,14 +183,19 @@ def build_reply(data, ca):
     if pair.get("pairCreatedAt"):
         created = datetime.fromtimestamp(pair["pairCreatedAt"] / 1000).strftime("%Y-%m-%d %H:%M")
 
-    # Data untuk LLM
+    fdv = format_number(pair.get("fdv"))
+    mcap = format_number(pair.get("marketCap"))
+    liq = format_number(pair.get("liquidity", {}).get("usd"))
+    vol = format_number(pair.get("volume", {}).get("h24"))
+
     llm_input = f"""
 Token: {base.get('symbol', 'N/A')} ({base.get('name', 'N/A')})
 CA: {ca}
 Chain: {pair.get('chainId', 'N/A')}
-Liquidity: {format_number(pair.get('liquidity', {}).get('usd'))}
-FDV: {format_number(pair.get('fdv'))}
-Volume 24h: {format_number(pair.get('volume', {}).get('h24'))}
+FDV: {fdv}
+Market Cap: {mcap}
+Liquidity: {liq}
+Volume 24h: {vol}
 Website: {website_url or 'Tidak ada'}
 Twitter: {twitter_url or 'Tidak ada'}
 Ringkasan Website:
@@ -201,16 +209,16 @@ Ringkasan Website:
 *CA:* `{ca}`
 *Chain:* {pair.get('chainId', 'N/A')}
 
-*Price:* ${pair.get('priceUsd', 'N/A')}
-*Liquidity:* {format_number(pair.get('liquidity', {}).get('usd'))}
-*FDV:* {format_number(pair.get('fdv'))}
-*Volume 24h:* {format_number(pair.get('volume', {}).get('h24'))}
+*FDV:* {fdv}
+*Market Cap:* {mcap}
+*Liquidity:* {liq}
+*Volume 24h:* {vol}
 
 *Website:* {website_url or 'Tidak ada'}
 *Twitter:* {twitter_url or 'Tidak ada'}
 
 *Ringkasan Website:*
-{website_text[:800]}{"..." if len(website_text) > 800 else ""}
+{website_text[:700]}{"..." if len(website_text) > 700 else ""}
 
 ---
 *Narrative Score:*
@@ -221,7 +229,7 @@ Ringkasan Website:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Kirim CA token untuk analisis + scoring narasi tech.\n\n"
-        "Contoh:\n`0x1e786d31934fc64f450ee47e3f61b41516312f4e`",
+        "Fokus: Hook, Sellability, dan FDV/Market Cap.",
         parse_mode="Markdown"
     )
 
@@ -254,7 +262,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("Bot Step 3 sedang berjalan...")
+    print("Bot Step 3 (Updated) sedang berjalan...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
