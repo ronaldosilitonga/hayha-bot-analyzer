@@ -78,7 +78,7 @@ def is_noise(text: str) -> bool:
         return True
     return len(re.findall(r"[a-zA-Z]", text)) / max(len(text), 1) < 0.55
 
-def scrape_website(url: str, max_chars: int = 600) -> str:
+def scrape_website(url: str, max_chars: int = 700) -> str:
     if not url:
         return "Tidak ada website"
     try:
@@ -166,7 +166,7 @@ Website: {website_url or 'Tidak ada'}
 Twitter: {twitter_url or 'Tidak ada'}
 
 Ringkasan Website:
-{website_text[:500]}
+{website_text[:280]}...
 
 ---
 Narrative Score:
@@ -183,16 +183,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Format CA tidak valid.")
         return
 
-    msg = await update.message.reply_text("Mengambil data...")
+    status = await update.message.reply_text("Mengambil data...")
     try:
         data = get_token_data(ca)
-        reply = build_reply(data, ca)
-        if len(reply) > 3900:
-            reply = reply[:3900] + "\n\n...(pesan dipotong)"
-        await msg.edit_text(reply)  # Tanpa parse_mode
+        if not data or not data.get("pairs"):
+            await status.edit_text(f"Tidak ada data untuk CA: {ca}")
+            return
+
+        pair = data["pairs"][0]
+        base = pair.get("baseToken", {})
+        info = pair.get("info", {})
+
+        website_url = (info.get("websites") or [{}])[0].get("url")
+        twitter_url = next((s["url"] for s in info.get("socials", []) if s.get("type") == "twitter"), None)
+        website_text = scrape_website(website_url)
+
+        fdv = format_number(pair.get("fdv"))
+        mcap = format_number(pair.get("marketCap"))
+        liq = format_number(pair.get("liquidity", {}).get("usd"))
+        vol = format_number(pair.get("volume", {}).get("h24"))
+
+        # Pesan 1: Data dasar
+        msg1 = f"""{base.get('symbol', 'N/A')} — {base.get('name', 'N/A')}
+
+CA: {ca}
+Chain: {pair.get('chainId', 'N/A')}
+
+FDV: {fdv}
+Market Cap: {mcap}
+Liquidity: {liq}
+Volume 24h: {vol}
+
+Website: {website_url or 'Tidak ada'}
+Twitter: {twitter_url or 'Tidak ada'}
+
+Ringkasan Website:
+{website_text[:600]}"""
+
+        await status.edit_text(msg1)
+
+        # Pesan 2: Scoring
+        llm_input = f"""Token: {base.get('symbol')} ({base.get('name')})
+Website: {website_url or 'Tidak ada'}
+Twitter: {twitter_url or 'Tidak ada'}
+Ringkasan: {website_text[:800]}"""
+
+        score = score_narrative(llm_input)
+        await update.message.reply_text(f"Narrative Score:\n\n{score}")
+
     except Exception as e:
         logger.exception("Error")
-        await msg.edit_text(f"Error memproses CA {ca}:\n{str(e)[:300]}")
+        await status.edit_text(f"Error memproses CA {ca}:\n{str(e)[:300]}")
 
 def main():
     if not BOT_TOKEN or "MASUKKAN" in BOT_TOKEN:
