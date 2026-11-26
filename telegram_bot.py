@@ -33,20 +33,34 @@ def escape_md(text: str) -> str:
     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', str(text))
 
 SCORING_PROMPT = """Kamu adalah degen berpengalaman yang menilai token memecoin dengan narasi tech.
-Fokus utama: Hook & Clarity + Sellability.
-Jangan buru-buru men-penalty chain. GitHub tidak ada hampir tidak mempengaruhi skor.
+Tugasmu hanya menilai kualitas narasi tech-nya (bukan fundamental jangka panjang).
 
-Data:
+Fokus utama (yang benar-benar mempengaruhi skor):
+1. Hook & Clarity — apakah mudah dipahami dan menarik dalam 1-2 kalimat?
+2. Sellability — apakah orang lain mudah “run” / shill narasi ini?
+3. Tech Plausibility — apakah klaimnya setidaknya masuk akal untuk degen?
+
+Yang TIDAK boleh menurunkan skor secara signifikan:
+- Tidak ada GitHub
+- Tidak ada info tim / partner / audit
+- Tidak ada tokenomics detail
+- FDV / liquidity rendah
+- Chain tertentu (termasuk Robinhood Chain)
+- Twitter belum terlalu aktif
+
+Jika website ada dan narasinya jelas, itu sudah cukup untuk skor menengah ke atas.
+Jika website tidak ada sama sekali → baru jadi red flag besar.
+
+Data yang kamu terima:
 {data}
 
-Output format:
+Output format (wajib):
 **Score:** 0.XX
 **Status Data:** Website [ada/tidak] | Twitter [ada/tidak] | GitHub [ada/tidak]
-**Alasan singkat:** (2-3 kalimat)
+**Alasan singkat:** (fokus ke hook & sellability)
 **Kekuatan:**
 - ...
-**Red flags / kelemahan:**
-- ...
+**Red flags / kelemahan:** (hanya yang berkaitan dengan narasi, bukan market/tim)
 **Kesimpulan:** layak dipantau / marginal / skip
 """
 
@@ -123,7 +137,14 @@ def build_reply(data, ca):
     liq = format_number(pair.get("liquidity", {}).get("usd"))
     vol = format_number(pair.get("volume", {}).get("h24"))
 
-    llm_input = f"Token: {base.get('symbol')} | FDV: {fdv} | Website: {website_url or 'Tidak ada'}\n{website_text}"
+    llm_input = f"""Token: {base.get('symbol')} ({base.get('name')})
+CA: {ca}
+FDV: {fdv}
+Website: {website_url or 'Tidak ada'}
+Twitter: {twitter_url or 'Tidak ada'}
+Ringkasan Website:
+{website_text}
+"""
     score = score_narrative(llm_input)
 
     # Pakai plain text supaya tidak error Markdown
